@@ -1,11 +1,12 @@
+// lib/screens/staff/complaint_detail.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ComplaintDetail extends StatefulWidget {
   final Map<String, dynamic> complaintJson;
-  const ComplaintDetail({Key? key, required this.complaintJson})
-      : super(key: key);
+  const ComplaintDetail({Key? key, required this.complaintJson}) : super(key: key);
 
   @override
   _ComplaintDetailState createState() => _ComplaintDetailState();
@@ -44,24 +45,47 @@ class _ComplaintDetailState extends State<ComplaintDetail> {
   }
 
   Future<void> _saveChanges() async {
-    final prefs = await SharedPreferences.getInstance();
-    final listRaw = prefs.getStringList('complaints') ?? <String>[];
-    final idx = listRaw.indexWhere((e) {
-      try {
-        final m = json.decode(e) as Map<String, dynamic>;
-        return m['id'] == c['id'];
-      } catch (_) {
-        return false;
+    // 1) Update Firestore if document exists (best-effort)
+    try {
+      final id = c['id']?.toString();
+      if (id != null && id.isNotEmpty) {
+        final docRef = FirebaseFirestore.instance.collection('complaints').doc(id);
+        final snapshot = await docRef.get();
+        if (snapshot.exists) {
+          await docRef.update(c);
+        } else {
+          // If doc didn't exist in cloud, try to create it (safe)
+          await docRef.set(c);
+        }
       }
-    });
-
-    if (idx >= 0) {
-      listRaw[idx] = json.encode(c);
-      await prefs.setStringList('complaints', listRaw);
+    } catch (e) {
+      debugPrint('Firestore update/create failed: $e');
     }
 
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Saved')));
+    // 2) Update local SharedPreferences list
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final listRaw = prefs.getStringList('complaints') ?? <String>[];
+      final idx = listRaw.indexWhere((e) {
+        try {
+          final m = json.decode(e) as Map<String, dynamic>;
+          return (m['id'] ?? '') == (c['id'] ?? '');
+        } catch (_) {
+          return false;
+        }
+      });
+      if (idx >= 0) {
+        listRaw[idx] = json.encode(c);
+      } else {
+        listRaw.insert(0, json.encode(c));
+      }
+      await prefs.setStringList('complaints', listRaw);
+    } catch (e) {
+      debugPrint('Local save failed: $e');
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
+    setState(() {});
   }
 
   Color _statusColor(String status) {
@@ -84,15 +108,8 @@ class _ComplaintDetailState extends State<ComplaintDetail> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text("$title: ",
-              style:
-                  const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(fontSize: 14),
-            ),
-          )
+          Text("$title: ", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+          Expanded(child: Text(value, style: const TextStyle(fontSize: 14))),
         ],
       ),
     );
@@ -107,186 +124,114 @@ class _ComplaintDetailState extends State<ComplaintDetail> {
     final train = c['trainNumber'] ?? '';
     final desc = c['description'] ?? '';
     final loc = c['location'] ?? '';
-    final notes =
-        (c['staffNotes'] as List<dynamic>?)?.cast<String>() ?? <String>[];
+    final notes = (c['staffNotes'] as List<dynamic>?)?.cast<String>() ?? <String>[];
 
     return Scaffold(
       appBar: AppBar(
         title: Text('Complaint $id'),
         elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              // Allow staff to quickly clear current user (local) - this is optional
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove('current_user');
+              Navigator.pushReplacementNamed(context, '/login');
+            },
+            tooltip: 'Logout',
+          )
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            /// --------------------
-            /// HEADER CARD
-            /// --------------------
             Card(
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               elevation: 3,
               child: Padding(
                 padding: const EdgeInsets.all(18),
                 child: Row(
                   children: [
-                    CircleAvatar(
-                      radius: 32,
-                      backgroundColor: Colors.redAccent,
-                      child: const Icon(Icons.report,
-                          size: 35, color: Colors.white),
-                    ),
+                    CircleAvatar(radius: 32, backgroundColor: Colors.redAccent, child: const Icon(Icons.report, size: 35, color: Colors.white)),
                     const SizedBox(width: 16),
                     Expanded(
-                      child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(title,
-                                style: const TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold)),
-                            const SizedBox(height: 6),
-                            Chip(
-                              label: Text(status.toUpperCase()),
-                              backgroundColor:
-                                  _statusColor(status).withOpacity(0.15),
-                              labelStyle: TextStyle(
-                                  color: _statusColor(status),
-                                  fontWeight: FontWeight.bold),
-                            )
-                          ]),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 6),
+                        Chip(label: Text(status.toString().toUpperCase()), backgroundColor: _statusColor(status).withOpacity(0.15), labelStyle: TextStyle(color: _statusColor(status), fontWeight: FontWeight.bold))
+                      ]),
                     ),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(_staffName,
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
-                        Text(_staffEmail,
-                            style: const TextStyle(color: Colors.grey)),
-                      ],
-                    ),
+                    Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                      Text(_staffName, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                      Text(_staffEmail, style: const TextStyle(color: Colors.grey)),
+                    ]),
                   ],
                 ),
               ),
             ),
-
             const SizedBox(height: 18),
-
-            /// --------------------
-            /// PHOTO (if any)
-            /// --------------------
             if ((c['photoBase64'] as String?)?.isNotEmpty == true)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Image.memory(
-                  base64Decode(c['photoBase64']),
-                  height: 220,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
-              ),
-
+              ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.memory(base64Decode(c['photoBase64']), height: 220, width: double.infinity, fit: BoxFit.cover)),
             const SizedBox(height: 18),
-
-            /// --------------------
-            /// DETAILS CARD
-            /// --------------------
             Card(
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               elevation: 3,
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text("Complaint Details",
-                          style: TextStyle(
-                              fontSize: 17, fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 12),
-
-                      _infoRow("Train", train),
-                      _infoRow("Phone", phone),
-                      _infoRow("Gender", c['gender'] ?? ''),
-                      _infoRow("Location", loc),
-
-                      const SizedBox(height: 12),
-                      const Text("Description",
-                          style: TextStyle(
-                              fontSize: 15, fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 6),
-                      Text(desc, style: const TextStyle(fontSize: 14)),
-                    ]),
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text("Complaint Details", style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  _infoRow("Train", train),
+                  _infoRow("Phone", phone),
+                  _infoRow("Gender", c['gender'] ?? ''),
+                  _infoRow("Location", loc),
+                  const SizedBox(height: 12),
+                  const Text("Description", style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  Text(desc, style: const TextStyle(fontSize: 14)),
+                ]),
               ),
             ),
-
             const SizedBox(height: 18),
-
-            /// --------------------
-            /// ACTION BUTTONS
-            /// --------------------
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: status == 'in-progress'
-                        ? null
-                        : () async {
-                            c['status'] = 'in-progress';
-                            await _saveChanges();
-                            setState(() {});
-                          },
-                    child: const Text('Mark In-Progress'),
-                  ),
+            Row(children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: status == 'in-progress'
+                      ? null
+                      : () async {
+                          c['status'] = 'in-progress';
+                          await _saveChanges();
+                        },
+                  child: const Text('Mark In-Progress'),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: status == 'resolved'
-                        ? null
-                        : () async {
-                            c['status'] = 'resolved';
-                            await _saveChanges();
-                            setState(() {});
-                          },
-                    child: const Text('Mark Resolved'),
-                  ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: status == 'resolved'
+                      ? null
+                      : () async {
+                          c['status'] = 'resolved';
+                          await _saveChanges();
+                        },
+                  child: const Text('Mark Resolved'),
                 ),
-              ],
-            ),
-
+              ),
+            ]),
             const SizedBox(height: 18),
-
-            /// --------------------
-            /// STAFF NOTES
-            /// --------------------
             if (notes.isNotEmpty)
               Card(
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 elevation: 3,
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text("Staff Notes",
-                            style: TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 10),
-                        ...notes
-                            .map((n) => Padding(
-                                  padding:
-                                      const EdgeInsets.only(bottom: 10.0),
-                                  child: Text(
-                                    "• $n",
-                                    style: const TextStyle(fontSize: 14),
-                                  ),
-                                ))
-                            .toList(),
-                      ]),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text("Staff Notes", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 10),
+                    ...notes.map((n) => Padding(padding: const EdgeInsets.only(bottom: 10.0), child: Text("• $n", style: const TextStyle(fontSize: 14)))).toList(),
+                  ]),
                 ),
               ),
           ],

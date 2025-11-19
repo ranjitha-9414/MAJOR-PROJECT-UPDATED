@@ -1,3 +1,5 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 class Complaint {
   final String id;
   final String fullName;
@@ -29,35 +31,43 @@ class Complaint {
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'fullName': fullName,
-        'gender': gender,
-        'trainNumber': trainNumber,
-        'category': category,
-        'description': description,
-        'phone': phone,
-        'photoBase64': photoBase64,
-        'location': location,
-        'address': address,
-        'status': status,
-        'userEmail': userEmail,
-        'createdAt': createdAt.toIso8601String(),
-      };
+  // ---------- JSON TO MODEL ----------
+  factory Complaint.fromJson(Map<String, dynamic> j) {
+    return Complaint(
+      id: j['id'] ?? j['docId'] ?? '',
+      fullName: j['fullName'] ?? '',
+      gender: j['gender'] ?? '',
+      trainNumber: j['trainNumber'] ?? '',
+      category: j['category'] ?? '',
+      description: j['description'] ?? j['desc'] ?? '',
+      phone: j['phone'] ?? '',
+      photoBase64: j['photoBase64'],
+      location: j['location'],
+      address: j['address'],
+      status: j['status'] ?? 'open',
+      userEmail: j['userEmail'] ?? '',
+      createdAt: j['createdAt'] != null
+          ? DateTime.parse(j['createdAt'])
+          : DateTime.now(),
+    );
+  }
 
-  factory Complaint.fromJson(Map<String, dynamic> j) => Complaint(
-        id: j['id'] ?? j['docId'] ?? '',
-        fullName: j['fullName'] ?? '',
-        gender: j['gender'] ?? '',
-        trainNumber: j['trainNumber'] ?? '',
-        category: j['category'] ?? '',
-        description: j['description'] ?? j['desc'] ?? '',
-        phone: j['phone'] ?? '',
-        photoBase64: j['photoBase64'],
-        location: j['location'],
-        address: j['address'],
-        status: j['status'] ?? 'open',
-        userEmail: j['userEmail'] ?? '',
-        createdAt: j['createdAt'] != null ? DateTime.parse(j['createdAt']) : DateTime.now(),
-      );
+  // ---------- MODEL TO JSON ----------
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'fullName': fullName,
+      'gender': gender,
+      'trainNumber': trainNumber,
+      'category': category,
+      'description': description,
+      'phone': phone,
+      'photoBase64': photoBase64,
+      'location': location,
+      'address': address,
+      'status': status,
+      'userEmail': userEmail,
+      'createdAt': createdAt.toIso8601String(),
+    };
+  }
 }

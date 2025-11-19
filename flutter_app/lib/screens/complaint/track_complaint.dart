@@ -1,6 +1,8 @@
+// lib/screens/complaint/track_complaint.dart
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../models/complaint.dart';
 
 class TrackComplaintScreen extends StatefulWidget {
@@ -18,7 +20,6 @@ class _TrackComplaintScreenState extends State<TrackComplaintScreen> {
 
   Future<void> _searchComplaint() async {
     final id = _idCtrl.text.trim();
-
     if (id.isEmpty) {
       setState(() {
         _error = "Please enter Complaint ID";
@@ -33,35 +34,57 @@ class _TrackComplaintScreenState extends State<TrackComplaintScreen> {
       _foundComplaint = null;
     });
 
-    final prefs = await SharedPreferences.getInstance();
-    final list = prefs.getStringList('complaints') ?? [];
-
-    for (var item in list) {
-      final obj = Complaint.fromJson(json.decode(item));
-      if (obj.id == id) {
+    // 1) Try Firestore
+    try {
+      final doc = await FirebaseFirestore.instance.collection('complaints').doc(id).get();
+      if (doc.exists) {
+        final map = Map<String, dynamic>.from(doc.data()!);
         setState(() {
-          _foundComplaint = obj;
+          _foundComplaint = Complaint.fromJson(map);
+          _searching = false;
         });
-        break;
+        return;
       }
+    } catch (e) {
+      debugPrint('Firestore search failed: $e');
     }
 
-    if (_foundComplaint == null) {
+    // 2) Fallback to SharedPreferences
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList('complaints') ?? [];
+      for (var item in list) {
+        final obj = Complaint.fromJson(json.decode(item));
+        if (obj.id == id) {
+          setState(() {
+            _foundComplaint = obj;
+            _searching = false;
+          });
+          return;
+        }
+      }
       setState(() {
         _error = "No complaint found with ID $id";
+        _searching = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = "Error searching complaints: $e";
+        _searching = false;
       });
     }
+  }
 
-    setState(() {
-      _searching = false;
-    });
+  @override
+  void dispose() {
+    _idCtrl.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xffF2F6FF),
-
       appBar: AppBar(
         title: const Text("Track Complaint"),
         backgroundColor: Colors.blue.shade700,
@@ -79,13 +102,10 @@ class _TrackComplaintScreenState extends State<TrackComplaintScreen> {
           )
         ],
       ),
-
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
-
-            /// 🔍 Search Card
             Card(
               elevation: 4,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -104,7 +124,6 @@ class _TrackComplaintScreenState extends State<TrackComplaintScreen> {
                       ),
                     ),
                     const SizedBox(height: 20),
-
                     TextField(
                       controller: _idCtrl,
                       decoration: InputDecoration(
@@ -117,9 +136,7 @@ class _TrackComplaintScreenState extends State<TrackComplaintScreen> {
                         ),
                       ),
                     ),
-
                     const SizedBox(height: 16),
-
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton(
@@ -143,10 +160,7 @@ class _TrackComplaintScreenState extends State<TrackComplaintScreen> {
                 ),
               ),
             ),
-
             const SizedBox(height: 25),
-
-            /// ❌ Error Message
             if (_error != null)
               Container(
                 padding: const EdgeInsets.all(14),
@@ -167,8 +181,6 @@ class _TrackComplaintScreenState extends State<TrackComplaintScreen> {
                   ],
                 ),
               ),
-
-            /// ✔ Complaint Found UI
             if (_foundComplaint != null) _buildResultCard(_foundComplaint!),
           ],
         ),
@@ -176,15 +188,14 @@ class _TrackComplaintScreenState extends State<TrackComplaintScreen> {
     );
   }
 
-  /// 📌 Result Card (Beautiful Railway Style)
   Widget _buildResultCard(Complaint c) {
     Color statusColor = Colors.blue;
-
     switch (c.status.toLowerCase()) {
       case 'submitted':
         statusColor = Colors.orange;
         break;
       case 'in progress':
+      case 'in-progress':
         statusColor = Colors.blue;
         break;
       case 'resolved':
@@ -209,25 +220,16 @@ class _TrackComplaintScreenState extends State<TrackComplaintScreen> {
                     fontWeight: FontWeight.bold,
                     color: Colors.blue.shade900)),
             const SizedBox(height: 15),
-
             _infoRow("Train Number", c.trainNumber),
             _infoRow("Category", c.category),
             _infoRow("Phone", c.phone),
             _infoRow("Location", c.location ?? "Not available"),
-
             const SizedBox(height: 10),
-
             Text("Description:",
-                style:
-                    TextStyle(fontWeight: FontWeight.bold, color: Colors.grey.shade700)),
+                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey.shade700)),
             const SizedBox(height: 6),
-            Text(
-              c.description,
-              style: const TextStyle(fontSize: 15),
-            ),
+            Text(c.description, style: const TextStyle(fontSize: 15)),
             const SizedBox(height: 20),
-
-            /// STATUS BADGE
             Container(
               padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
               decoration: BoxDecoration(
@@ -249,7 +251,6 @@ class _TrackComplaintScreenState extends State<TrackComplaintScreen> {
     );
   }
 
-  /// Helper row widget
   Widget _infoRow(String title, String value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),

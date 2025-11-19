@@ -1,9 +1,11 @@
+// lib/screens/complaint/new_complaint.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart' show MissingPluginException;
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../services/geolocation_stub.dart' if (dart.library.html) '../../services/geolocation_web.dart';
 import '../../utils/validators.dart';
 import '../../services/ip_geolocation.dart';
@@ -22,11 +24,11 @@ class NewComplaintScreen extends StatefulWidget {
 class _NewComplaintScreenState extends State<NewComplaintScreen> {
   final _formKey = GlobalKey<FormState>();
   final _descCtrl = TextEditingController();
-
   final _nameCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
   final _trainCtrl = TextEditingController();
   final _locationCtrl = TextEditingController();
+
   String _gender = 'Male';
   String _department = 'Technical';
   String? _photoBase64;
@@ -35,8 +37,17 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
   final _departments = ['Technical', 'Cleaning', 'Infrastructure', 'Safety', 'Misconduct', 'Other'];
 
   @override
+  void dispose() {
+    _descCtrl.dispose();
+    _nameCtrl.dispose();
+    _phoneCtrl.dispose();
+    _trainCtrl.dispose();
+    _locationCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    // Metro-style blue + white theme for the complaint form
     const primaryBlue = Color(0xFF0D47A1);
     const lightBlue = Color(0xFFE3F2FD);
 
@@ -56,7 +67,6 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
-          // Header card with icon
           Container(
             decoration: BoxDecoration(color: primaryBlue, borderRadius: BorderRadius.circular(12)),
             padding: const EdgeInsets.all(14),
@@ -105,7 +115,6 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Image picker + preview
                     Row(
                       children: [
                         ElevatedButton.icon(
@@ -218,7 +227,6 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
 
   Future<void> _getLocation() async {
     try {
-      // On web, Geolocator's isLocationServiceEnabled may not be implemented.
       if (!kIsWeb) {
         bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
         if (!serviceEnabled) {
@@ -241,25 +249,20 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
       }
 
       if (kIsWeb) {
-        // first try browser geolocation
         final loc = await getBrowserLocation();
         if (loc != null) {
           final lat = loc['lat']!;
           final lng = loc['lng']!;
           _locationCtrl.text = '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}';
-          // Debug feedback
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Location obtained (browser): ${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}')));
-          print('Location obtained via browser geolocation: $lat, $lng');
           setState(() {});
         } else {
-          // fallback to IP-based approximate location so user gets location automatically
           final ipLoc = await getIpLocation();
           if (ipLoc != null) {
             final lat = ipLoc['lat'] as double;
             final lng = ipLoc['lng'] as double;
             _locationCtrl.text = '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}';
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Using approximate location from IP')));
-            print('IP fallback location: $lat, $lng');
             setState(() {});
           } else {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Browser geolocation unavailable or permission denied.')));
@@ -271,7 +274,6 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
         final lng = pos.longitude;
         _locationCtrl.text = '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}';
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Location obtained (device): ${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}')));
-        print('Device GPS location: $lat, $lng');
         setState(() {});
       }
     } on MissingPluginException catch (_) {
@@ -311,7 +313,7 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
               final lat = latCtrl.text.trim();
               final lng = lngCtrl.text.trim();
               if (lat.isNotEmpty && lng.isNotEmpty) {
-                _locationCtrl.text = ' $lat, $lng'.replaceFirst('\u0000', '');
+                _locationCtrl.text = '$lat, $lng';
                 Navigator.of(ctx).pop();
                 setState(() {});
                 return;
@@ -331,7 +333,6 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
       return;
     }
 
-    // Show confirmation dialog
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -346,6 +347,7 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
     if (confirmed != true) return;
 
     setState(() => _submitting = true);
+
     final prefs = await SharedPreferences.getInstance();
     final listRaw = prefs.getStringList('complaints') ?? <String>[];
     final id = await _generateComplaintId(_department);
@@ -359,19 +361,39 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
       phone: normalizePhone(phone),
       photoBase64: _photoBase64,
       location: _locationCtrl.text.isNotEmpty ? _locationCtrl.text : null,
-      // address removed; only storing lat,lng string in `location` field
       userEmail: 'local',
     );
-    listRaw.insert(0, json.encode(complaint.toJson()));
-    await prefs.setStringList('complaints', listRaw);
-    await Future.delayed(const Duration(milliseconds: 300));
+
+    // 1) Try to save to Firestore (best-effort). If it fails, we still persist locally.
+    bool savedToFirestore = false;
+    try {
+      final doc = FirebaseFirestore.instance.collection('complaints').doc(complaint.id);
+      await doc.set(complaint.toJson());
+      savedToFirestore = true;
+    } catch (e) {
+      // Firestore not available or offline - fallback will handle local saving
+      debugPrint('Firestore save failed: $e');
+    }
+
+    // 2) Always save locally as a fallback / offline replica
+    try {
+      listRaw.insert(0, json.encode(complaint.toJson()));
+      await prefs.setStringList('complaints', listRaw);
+    } catch (e) {
+      debugPrint('Local save failed: $e');
+    }
+
     setState(() => _submitting = false);
-    // Navigate to acknowledgement page with complaint data
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(savedToFirestore ? 'Complaint submitted (synced to cloud)' : 'Complaint saved locally (offline)')),
+    );
+
+    // Navigate to acknowledgement page
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => ComplaintAcknowledgement(complaintJson: complaint.toJson())));
   }
 
   Future<String> _generateComplaintId(String department) async {
-    // Map department names to 3-letter codes
     const map = {
       'Technical': 'TEC',
       'Cleaning': 'CLN',
