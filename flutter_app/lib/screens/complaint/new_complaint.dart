@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart' show MissingPluginException;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../../services/geolocation_stub.dart' if (dart.library.html) '../../services/geolocation_web.dart';
 import '../../utils/validators.dart';
 import '../../services/ip_geolocation.dart';
@@ -351,6 +352,11 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
     final prefs = await SharedPreferences.getInstance();
     final listRaw = prefs.getStringList('complaints') ?? <String>[];
     final id = await _generateComplaintId(_department);
+
+    // Use Firebase authenticated user email if available (since you chose option A)
+    final firebaseUser = FirebaseAuth.instance.currentUser;
+    final userEmail = firebaseUser?.email ?? prefs.getString('current_user') ?? 'local';
+
     final complaint = Complaint(
       id: id,
       fullName: _nameCtrl.text.trim(),
@@ -361,17 +367,24 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
       phone: normalizePhone(phone),
       photoBase64: _photoBase64,
       location: _locationCtrl.text.isNotEmpty ? _locationCtrl.text : null,
-      userEmail: 'local',
+      userEmail: userEmail,
     );
 
-    // 1) Try to save to Firestore (best-effort). If it fails, we still persist locally.
+    // 1) Try to save to Firestore (best-effort).
     bool savedToFirestore = false;
     try {
-      final doc = FirebaseFirestore.instance.collection('complaints').doc(complaint.id);
-      await doc.set(complaint.toJson());
+      final docRef = FirebaseFirestore.instance.collection('complaints').doc(complaint.id);
+
+      // Build cloud map and set server timestamp for createdAt to keep uniform type
+      final cloudMap = Map<String, dynamic>.from(complaint.toJson());
+      // Remove createdAt string and set server timestamp instead
+      cloudMap['createdAt'] = FieldValue.serverTimestamp();
+      // ensure userEmail is correct (authenticated)
+      cloudMap['userEmail'] = userEmail;
+
+      await docRef.set(cloudMap);
       savedToFirestore = true;
     } catch (e) {
-      // Firestore not available or offline - fallback will handle local saving
       debugPrint('Firestore save failed: $e');
     }
 

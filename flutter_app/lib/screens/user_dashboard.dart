@@ -1,11 +1,15 @@
+// lib/screens/user_dashboard.dart
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 import 'chatbot_placeholder.dart';
 import 'package:rail_aid/screens/user/profile_user.dart';
-import '../../models/complaint.dart';
+import 'package:rail_aid/models/complaint.dart';
 
 /// ---------------------------------------------------------------
 /// MAIN DASHBOARD WRAPPER
@@ -66,6 +70,8 @@ class _UserHomeState extends State<UserHome> with TickerProviderStateMixin {
   late AnimationController cardSlideCtrl;
   late AnimationController trainCtrl;
 
+  bool _syncing = false;
+
   @override
   void initState() {
     super.initState();
@@ -105,28 +111,132 @@ class _UserHomeState extends State<UserHome> with TickerProviderStateMixin {
     super.dispose();
   }
 
+  /// Load local data and then try to sync with Firestore
   Future<void> _loadData() async {
-  final prefs = await SharedPreferences.getInstance();
-  final current = prefs.getString("current_user");
+    final prefs = await SharedPreferences.getInstance();
+    final current = prefs.getString("current_user");
 
-  if (current != null) {
-    final raw = prefs.getString("user_$current");
+    if (current != null) {
+      final raw = prefs.getString("user_$current");
 
-    if (raw != null) {
-      final j = jsonDecode(raw);
-      setState(() => _name = j["name"] ?? "User");
-    } else {
-      setState(() => _name = current.split("@").first);
+      if (raw != null) {
+        try {
+          final j = jsonDecode(raw);
+          setState(() => _name = j["name"] ?? "User");
+        } catch (_) {
+          setState(() => _name = current.split("@").first);
+        }
+      } else {
+        setState(() => _name = current.split("@").first);
+      }
+    }
+
+    // Load local complaints first (fast)
+    final list = prefs.getStringList("complaints") ?? [];
+    final localComplaints = <Complaint>[];
+    for (final s in list) {
+      try {
+        final m = jsonDecode(s) as Map<String, dynamic>;
+        localComplaints.add(Complaint.fromJson(m));
+      } catch (_) {}
+    }
+
+    setState(() => _complaints = localComplaints);
+
+    // Then try to sync (merge) from Firestore in background
+    _syncFromFirestoreAndMerge();
+  }
+
+  /// Fetch cloud complaints for current user and merge with local list.
+  /// Merge strategy: use unique id; prefer the one with latest createdAt.
+  Future<void> _syncFromFirestoreAndMerge() async {
+    setState(() => _syncing = true);
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        setState(() => _syncing = false);
+        return;
+      }
+      final userEmail = user.email ?? user.uid;
+
+      // Attempt to read cloud documents for this user (best-effort)
+      QuerySnapshot q;
+      try {
+        q = await FirebaseFirestore.instance
+            .collection('complaints')
+            .where('userEmail', isEqualTo: userEmail)
+            .orderBy('createdAt', descending: true)
+            .limit(200)
+            .get();
+      } catch (e) {
+        // If Firestore throws (index required or other), log and fallback to local only.
+        debugPrint('Firestore query failed (will fallback to local): $e');
+        setState(() => _syncing = false);
+        return;
+      }
+
+      // Build map from local complaints
+      final Map<String, Complaint> merged = {
+        for (final c in _complaints) c.id: c,
+      };
+
+      // Convert firestore docs to Complaint and merge
+      for (final d in q.docs) {
+        final data = Map<String, dynamic>.from(d.data() as Map<String, dynamic>);
+        // ensure id and createdAt are in consistent format for fromJson
+        data['id'] = data['id'] ?? d.id;
+        final createdAtRaw = data['createdAt'];
+        if (createdAtRaw is Timestamp) {
+          data['createdAt'] = createdAtRaw.toDate().toIso8601String();
+        } else if (createdAtRaw is DateTime) {
+          data['createdAt'] = createdAtRaw.toIso8601String();
+        } else if (createdAtRaw == null) {
+          // fallback to now
+          data['createdAt'] = DateTime.now().toIso8601String();
+        } // otherwise assume already a string
+
+        try {
+          final cloudC = Complaint.fromJson(data);
+          final existing = merged[cloudC.id];
+          if (existing == null) {
+            merged[cloudC.id] = cloudC;
+          } else {
+            // prefer newer by createdAt
+            DateTime existingDt = existing.createdAt;
+            DateTime cloudDt = cloudC.createdAt;
+            if (cloudDt.isAfter(existingDt)) {
+              merged[cloudC.id] = cloudC;
+            }
+          }
+        } catch (e) {
+          // ignore malformed doc
+          debugPrint('Failed to parse cloud complaint ${d.id}: $e');
+        }
+      }
+
+      // Convert merged map to sorted list (newest first)
+      final mergedList = merged.values.toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+      // Persist merged list to SharedPreferences
+      await _saveLocalComplaints(mergedList);
+
+      setState(() {
+        _complaints = mergedList;
+      });
+    } catch (e) {
+      debugPrint('Sync failed: $e');
+      // keep local-only data if sync fails
+    } finally {
+      setState(() => _syncing = false);
     }
   }
 
-  final list = prefs.getStringList("complaints") ?? [];
-  setState(() {
-    _complaints = list.map((e) => Complaint.fromJson(jsonDecode(e))).toList();
-  });
-}
-
-
+  Future<void> _saveLocalComplaints(List<Complaint> list) async {
+    final prefs = await SharedPreferences.getInstance();
+    final sl = list.map((c) => json.encode(c.toJson())).toList();
+    await prefs.setStringList('complaints', sl);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -185,8 +295,7 @@ class _UserHomeState extends State<UserHome> with TickerProviderStateMixin {
                               Text(
                                 "Passenger Dashboard",
                                 style: TextStyle(
-                                    fontSize: 24,
-                                    fontWeight: FontWeight.bold),
+                                    fontSize: 24, fontWeight: FontWeight.bold),
                               )
                             ],
                           ),
@@ -261,7 +370,8 @@ class _UserHomeState extends State<UserHome> with TickerProviderStateMixin {
                             onTap: () async {
                               await Navigator.pushNamed(
                                   context, '/complaint/new');
-                              _loadData();
+                              // After returning, reload local + try sync
+                              await _loadData();
                             },
                           ),
                         ),
@@ -290,12 +400,22 @@ class _UserHomeState extends State<UserHome> with TickerProviderStateMixin {
                         const Text("Total Complaints",
                             style: TextStyle(
                                 fontSize: 18, fontWeight: FontWeight.w600)),
-                        Text(
-                          "${_complaints.length}",
-                          style: const TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.redAccent),
+                        Row(
+                          children: [
+                            Text(
+                              "${_complaints.length}",
+                              style: const TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.redAccent),
+                            ),
+                            const SizedBox(width: 12),
+                            if (_syncing)
+                              const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2))
+                          ],
                         )
                       ],
                     ),
@@ -351,6 +471,9 @@ class _UserHomeState extends State<UserHome> with TickerProviderStateMixin {
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                     trailing: BounceStatus(status: c.status),
+                                    onTap: () {
+                                      // open detailed view if you have one (not included here)
+                                    },
                                   ),
                                 ),
                               );

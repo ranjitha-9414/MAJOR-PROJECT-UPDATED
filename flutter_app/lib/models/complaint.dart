@@ -1,3 +1,4 @@
+// lib/models/complaint.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class Complaint {
@@ -33,6 +34,28 @@ class Complaint {
 
   // ---------- JSON TO MODEL ----------
   factory Complaint.fromJson(Map<String, dynamic> j) {
+    // createdAt can be String (ISO), Timestamp, int (ms), or DateTime
+    DateTime created;
+    final raw = j['createdAt'];
+    if (raw == null) {
+      created = DateTime.now();
+    } else if (raw is Timestamp) {
+      created = raw.toDate();
+    } else if (raw is DateTime) {
+      created = raw;
+    } else if (raw is int) {
+      // unix millis
+      created = DateTime.fromMillisecondsSinceEpoch(raw);
+    } else if (raw is String) {
+      try {
+        created = DateTime.parse(raw);
+      } catch (_) {
+        created = DateTime.now();
+      }
+    } else {
+      created = DateTime.now();
+    }
+
     return Complaint(
       id: j['id'] ?? j['docId'] ?? '',
       fullName: j['fullName'] ?? '',
@@ -46,9 +69,7 @@ class Complaint {
       address: j['address'],
       status: j['status'] ?? 'open',
       userEmail: j['userEmail'] ?? '',
-      createdAt: j['createdAt'] != null
-          ? DateTime.parse(j['createdAt'])
-          : DateTime.now(),
+      createdAt: created,
     );
   }
 
@@ -67,6 +88,7 @@ class Complaint {
       'address': address,
       'status': status,
       'userEmail': userEmail,
+      // Keep ISO string for local storage compatibility
       'createdAt': createdAt.toIso8601String(),
     };
   }

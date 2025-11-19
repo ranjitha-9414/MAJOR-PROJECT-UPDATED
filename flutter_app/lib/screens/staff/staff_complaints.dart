@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:rail_aid/screens/staff/complaint_detail.dart';
+import '../../models/complaint.dart';
 
 class StaffComplaints extends StatefulWidget {
   final String department;
-
   const StaffComplaints({Key? key, required this.department}) : super(key: key);
 
   @override
@@ -29,19 +29,14 @@ class _StaffComplaintsState extends State<StaffComplaints> {
     _loadComplaints();
   }
 
-  // ---------------------------------------------------------------------------
-  // LOAD COMPLAINTS (Firebase → fallback local)
-  // ---------------------------------------------------------------------------
   Future<void> _loadComplaints() async {
     setState(() => _loading = true);
 
     final prefs = await SharedPreferences.getInstance();
     final current = prefs.getString('current_user');
-
     if (current != null) {
       _staffEmail = current;
       final raw = prefs.getString('user_$current');
-
       if (raw != null) {
         try {
           final j = json.decode(raw);
@@ -52,30 +47,53 @@ class _StaffComplaintsState extends State<StaffComplaints> {
       }
     }
 
-    // Try FIRESTORE first
+    // Try Firestore first (collection 'complaints' with category == department)
     try {
+      // avoid orderBy that requires composite index; fetch and sort locally
       final q = await FirebaseFirestore.instance
           .collection('complaints')
           .where('category', isEqualTo: widget.department)
-          .orderBy('createdAt', descending: true)
-          .limit(100)
+          .limit(200)
           .get();
 
-      final docs = q.docs.map((d) => {...d.data(), 'id': d.id}).toList();
+      final docs = q.docs.map((d) {
+        final data = Map<String, dynamic>.from(d.data());
+        // normalize createdAt for local use
+        final rawCreated = data['createdAt'];
+        if (rawCreated is Timestamp) {
+          data['createdAt'] = rawCreated.toDate().toIso8601String();
+        } else if (rawCreated is DateTime) {
+          data['createdAt'] = rawCreated.toIso8601String();
+        } else if (rawCreated == null) {
+          data['createdAt'] = DateTime.now().toIso8601String();
+        } // else keep string
+        data['id'] = data['id'] ?? d.id;
+        return data;
+      }).toList();
+
+      // sort newest first
+      docs.sort((a, b) {
+        try {
+          final da = DateTime.parse(a['createdAt']);
+          final db = DateTime.parse(b['createdAt']);
+          return db.compareTo(da);
+        } catch (_) {
+          return 0;
+        }
+      });
 
       setState(() {
         _complaints = docs.cast<Map<String, dynamic>>();
         _loading = false;
       });
-
       return;
     } catch (e) {
-      debugPrint('⚠ Firestore load failed: $e');
+      debugPrint('Firestore load failed (staff): $e');
+      // fall through to local fallback
     }
 
-    // LOCAL fallback
+    // Fallback: SharedPreferences
     final rawList = prefs.getStringList('complaints') ?? <String>[];
-
     final list = rawList.map((e) {
       try {
         return json.decode(e) as Map<String, dynamic>;
@@ -84,28 +102,36 @@ class _StaffComplaintsState extends State<StaffComplaints> {
       }
     }).where((m) => m.isNotEmpty && (m['category'] ?? '') == widget.department).toList();
 
+    // sort local list newest first
+    list.sort((a, b) {
+      try {
+        final da = DateTime.parse(a['createdAt'] ?? DateTime.now().toIso8601String());
+        final db = DateTime.parse(b['createdAt'] ?? DateTime.now().toIso8601String());
+        return db.compareTo(da);
+      } catch (_) {
+        return 0;
+      }
+    });
+
     setState(() {
       _complaints = list;
       _loading = false;
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // UPDATE STATUS (single)
-  // ---------------------------------------------------------------------------
   Future<void> _updateComplaintStatus(String id, String newStatus) async {
+    // Update Firestore if possible (and update local fallback)
     try {
-      await FirebaseFirestore.instance
-          .collection('complaints')
-          .doc(id)
-          .update({'status': newStatus});
+      final docRef = FirebaseFirestore.instance.collection('complaints').doc(id);
+      // Use update in try; if fails (doc doesn't exist) set/merge
+      await docRef.set({'status': newStatus}, SetOptions(merge: true));
     } catch (e) {
-      debugPrint('⚠ Cloud update failed: $e');
+      debugPrint('Cloud update failed: $e');
     }
 
+    // local update: update SharedPreferences list
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getStringList('complaints') ?? <String>[];
-
     final updated = raw.map((e) {
       try {
         final m = json.decode(e);
@@ -117,29 +143,24 @@ class _StaffComplaintsState extends State<StaffComplaints> {
         return e;
       }
     }).toList();
-
     await prefs.setStringList('complaints', updated);
+
     await _loadComplaints();
   }
 
-  // ---------------------------------------------------------------------------
-  // BULK UPDATE STATUS
-  // ---------------------------------------------------------------------------
   Future<void> _bulkUpdateStatus(String status) async {
     if (_selected.isEmpty) return;
 
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getStringList('complaints') ?? <String>[];
 
+    // Try update cloud (best-effort)
     try {
       for (final id in _selected) {
-        await FirebaseFirestore.instance
-            .collection('complaints')
-            .doc(id)
-            .update({'status': status});
+        await FirebaseFirestore.instance.collection('complaints').doc(id).set({'status': status}, SetOptions(merge: true));
       }
     } catch (e) {
-      debugPrint('⚠ Bulk cloud update failed: $e');
+      debugPrint('Bulk cloud update failed: $e');
     }
 
     final updated = raw.map((e) {
@@ -155,74 +176,46 @@ class _StaffComplaintsState extends State<StaffComplaints> {
     }).toList();
 
     await prefs.setStringList('complaints', updated);
-    final count = _selected.length;
-
+    final cnt = _selected.length;
     _selected.clear();
     await _loadComplaints();
-
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('Updated $count complaints')));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Updated $cnt complaints')));
   }
 
-  // ---------------------------------------------------------------------------
-  // DEPARTMENT COLORS (Enhanced Modern Styling)
-  // ---------------------------------------------------------------------------
-  Color _deptPrimary() {
+  Color _deptColor() {
     switch (widget.department) {
       case "Technical":
-        return Colors.blue.shade700;
+        return Colors.blue;
       case "Cleaning":
-        return Colors.green.shade700;
+        return Colors.green;
       case "Safety":
-        return Colors.red.shade700;
+        return Colors.red;
       case "Infrastructure":
-        return Colors.orange.shade700;
+        return Colors.orange;
       case "Misconduct":
-        return Colors.purple.shade700;
+        return Colors.purple;
       default:
-        return Colors.teal.shade700;
+        return Colors.teal;
     }
   }
 
-  Color _deptLight() => _deptPrimary().withOpacity(0.10);
-
-  IconData _deptIcon() {
-    switch (widget.department) {
-      case "Technical":
-        return Icons.engineering;
-      case "Cleaning":
-        return Icons.cleaning_services;
-      case "Safety":
-        return Icons.security;
-      case "Infrastructure":
-        return Icons.construction;
-      case "Misconduct":
-        return Icons.report_problem;
-      default:
-        return Icons.category;
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // UI BUILD
-  // ---------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _deptLight(),
+      backgroundColor: _deptColor().withOpacity(0.05),
       appBar: AppBar(
-        backgroundColor: _deptPrimary(),
-        title: Row(
-          children: [
-            Icon(_deptIcon(), color: Colors.white),
-            const SizedBox(width: 8),
-            Text('${widget.department} Dept'),
-          ],
-        ),
+        title: Text('${widget.department} Complaints'),
+        backgroundColor: _deptColor(),
         actions: [
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadComplaints),
           IconButton(
-            icon: const Icon(Icons.refresh, color: Colors.white),
-            onPressed: _loadComplaints,
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove('current_user');
+              Navigator.pushReplacementNamed(context, '/login');
+            },
+            tooltip: 'Logout (local staff)',
           ),
         ],
       ),
@@ -237,10 +230,9 @@ class _StaffComplaintsState extends State<StaffComplaints> {
                 itemBuilder: _buildListItem,
               ),
             ),
-
       floatingActionButton: _selected.isNotEmpty
           ? FloatingActionButton.extended(
-              backgroundColor: _deptPrimary(),
+              backgroundColor: _deptColor(),
               icon: const Icon(Icons.done),
               label: Text('${_selected.length} selected'),
               onPressed: _showBulkSheet,
@@ -249,48 +241,99 @@ class _StaffComplaintsState extends State<StaffComplaints> {
     );
   }
 
-  // HEADER CARD
+  Widget _buildListItem(BuildContext context, int index) {
+    if (index == 0) return _buildHeader();
+
+    final filtered = _complaints.where((m) {
+      final status = (m['status'] ?? '').toString();
+      if (_statusFilter != 'all' && status != _statusFilter) return false;
+      if (_searchQuery.isEmpty) return true;
+      final q = _searchQuery.toLowerCase();
+      return m.values.any((v) => v.toString().toLowerCase().contains(q));
+    }).toList();
+
+    if (filtered.isEmpty) {
+      return SizedBox(
+        height: MediaQuery.of(context).size.height * 0.6,
+        child: Center(child: Text('No complaints in ${widget.department}')),
+      );
+    }
+
+    final complaint = filtered[index - 1];
+    final id = complaint['id'];
+    final status = (complaint['status'] ?? 'open').toString();
+
+    // color by department (subtle left border)
+    final leftColor = _deptColor();
+
+    return Card(
+      elevation: 3,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(left: BorderSide(color: leftColor, width: 6)),
+        ),
+        child: ListTile(
+          leading: Checkbox(
+            value: _selected.contains(id.toString()),
+            onChanged: (v) {
+              setState(() {
+                v == true ? _selected.add(id.toString()) : _selected.remove(id.toString());
+              });
+            },
+          ),
+          title: Text(complaint['fullName'] ?? 'Unknown'),
+          subtitle: Text((complaint['description'] ?? '').toString().replaceAll("\n", " "), maxLines: 2, overflow: TextOverflow.ellipsis),
+          trailing: DropdownButton<String>(
+            value: status,
+            underline: const SizedBox(),
+            items: const [
+              DropdownMenuItem(value: 'open', child: Text('Open')),
+              DropdownMenuItem(value: 'in-progress', child: Text('In-Progress')),
+              DropdownMenuItem(value: 'resolved', child: Text('Resolved')),
+            ],
+            onChanged: (val) async {
+              if (val != null) {
+                await _updateComplaintStatus(id.toString(), val);
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Updated to $val')));
+              }
+            },
+          ),
+          onTap: () async {
+            await Navigator.push(context, MaterialPageRoute(builder: (_) => ComplaintDetail(complaintJson: complaint)));
+            _loadComplaints();
+          },
+        ),
+      ),
+    );
+  }
+
   Widget _buildHeader() {
     return Card(
-      color: _deptLight(),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      color: _deptColor().withOpacity(0.15),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
-        padding: const EdgeInsets.all(18),
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
             Row(
               children: [
                 CircleAvatar(
-                  backgroundColor: _deptPrimary(),
+                  backgroundColor: _deptColor(),
                   radius: 28,
-                  child: Text(
-                    _staffName[0].toUpperCase(),
-                    style: const TextStyle(color: Colors.white, fontSize: 22),
-                  ),
+                  child: Text(_staffName.isNotEmpty ? _staffName[0].toUpperCase() : 'S', style: const TextStyle(fontSize: 22, color: Colors.white)),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Hello, $_staffName',
-                          style: const TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.bold)),
-                      Text(_staffEmail,
-                          style: const TextStyle(color: Colors.grey)),
-                    ],
-                  ),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('Hello, $_staffName', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    Text(_staffEmail, style: const TextStyle(color: Colors.grey)),
+                  ]),
                 ),
-                Text(
-                  '${_complaints.length}',
-                  style: const TextStyle(
-                      fontSize: 20, fontWeight: FontWeight.bold),
-                )
+                Text('${_complaints.length}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))
               ],
             ),
-            const SizedBox(height: 14),
-
-            // Search + Filter
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
@@ -301,10 +344,7 @@ class _StaffComplaintsState extends State<StaffComplaints> {
                       prefixIcon: const Icon(Icons.search),
                       filled: true,
                       fillColor: Colors.white,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                     ),
                   ),
                 ),
@@ -314,103 +354,19 @@ class _StaffComplaintsState extends State<StaffComplaints> {
                   items: const [
                     DropdownMenuItem(value: 'all', child: Text("All")),
                     DropdownMenuItem(value: 'open', child: Text("Open")),
-                    DropdownMenuItem(
-                        value: 'in-progress', child: Text("In-Progress")),
+                    DropdownMenuItem(value: 'in-progress', child: Text("In-Progress")),
                     DropdownMenuItem(value: 'resolved', child: Text("Resolved")),
                   ],
                   onChanged: (v) => setState(() => _statusFilter = v!),
                 ),
               ],
-            )
+            ),
           ],
         ),
       ),
     );
   }
 
-  // LIST ITEMS
-  Widget _buildListItem(BuildContext context, int index) {
-    if (index == 0) return _buildHeader();
-
-    final filtered = _complaints.where((m) {
-      final status = (m['status'] ?? '').toString();
-      if (_statusFilter != 'all' && status != _statusFilter) return false;
-
-      if (_searchQuery.isEmpty) return true;
-
-      final q = _searchQuery.toLowerCase();
-      return m.values.any((v) => v.toString().toLowerCase().contains(q));
-    }).toList();
-
-    if (filtered.isEmpty) {
-      return SizedBox(
-        height: 300,
-        child: Center(
-          child: Text(
-            'No complaints in ${widget.department}',
-            style: TextStyle(color: _deptPrimary(), fontSize: 16),
-          ),
-        ),
-      );
-    }
-
-    final complaint = filtered[index - 1];
-    final id = complaint['id'];
-    final status = complaint['status'] ?? 'open';
-
-    return Card(
-      elevation: 3,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: ListTile(
-        leading: Checkbox(
-          value: _selected.contains(id.toString()),
-          activeColor: _deptPrimary(),
-          onChanged: (v) {
-            setState(() {
-              v == true ? _selected.add(id) : _selected.remove(id);
-            });
-          },
-        ),
-        title: Text(complaint['fullName'] ?? 'Unknown',
-            style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text(
-          (complaint['description'] ?? '')
-              .toString()
-              .replaceAll("\n", " "),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
-        trailing: DropdownButton<String>(
-          value: status,
-          underline: const SizedBox(),
-          items: const [
-            DropdownMenuItem(value: 'open', child: Text('Open')),
-            DropdownMenuItem(
-                value: 'in-progress', child: Text('In-Progress')),
-            DropdownMenuItem(value: 'resolved', child: Text('Resolved')),
-          ],
-          onChanged: (val) async {
-            if (val != null) {
-              await _updateComplaintStatus(id, val);
-              ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Updated to $val')));
-            }
-          },
-        ),
-        onTap: () async {
-          await Navigator.push(
-            context,
-            MaterialPageRoute(
-                builder: (_) =>
-                    ComplaintDetail(complaintJson: complaint)),
-          );
-          _loadComplaints();
-        },
-      ),
-    );
-  }
-
-  // BULK ACTION SHEET
   Future<void> _showBulkSheet() async {
     final choice = await showModalBottomSheet<String>(
       context: context,
@@ -418,23 +374,9 @@ class _StaffComplaintsState extends State<StaffComplaints> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ListTile(
-              leading:
-                  const Icon(Icons.circle_outlined, color: Colors.red),
-              title: const Text("Mark Open"),
-              onTap: () => Navigator.pop(ctx, "open"),
-            ),
-            ListTile(
-              leading: const Icon(Icons.sync, color: Colors.orange),
-              title: const Text("Mark In-Progress"),
-              onTap: () => Navigator.pop(ctx, "in-progress"),
-            ),
-            ListTile(
-              leading:
-                  const Icon(Icons.check_circle, color: Colors.green),
-              title: const Text("Mark Resolved"),
-              onTap: () => Navigator.pop(ctx, "resolved"),
-            ),
+            InkWell(onTap: () => Navigator.pop(ctx, "open"), child: const ListTile(leading: Icon(Icons.circle_outlined, color: Colors.red), title: Text("Mark Open"))),
+            InkWell(onTap: () => Navigator.pop(ctx, "in-progress"), child: const ListTile(leading: Icon(Icons.sync, color: Colors.orange), title: Text("Mark In-Progress"))),
+            InkWell(onTap: () => Navigator.pop(ctx, "resolved"), child: const ListTile(leading: Icon(Icons.check_circle, color: Colors.green), title: Text("Mark Resolved"))),
           ],
         ),
       ),
