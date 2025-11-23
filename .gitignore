@@ -1,1 +1,3 @@
 Main-Project-Trained/
+*.pt
+*.safetensors
