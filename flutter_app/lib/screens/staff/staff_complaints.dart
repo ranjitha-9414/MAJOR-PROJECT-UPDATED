@@ -226,8 +226,84 @@ class _StaffComplaintsState extends State<StaffComplaints> {
               child: ListView.separated(
                 padding: const EdgeInsets.all(12),
                 separatorBuilder: (_, __) => const SizedBox(height: 10),
-                itemCount: (_complaints.isEmpty ? 1 : _complaints.length + 1),
-                itemBuilder: _buildListItem,
+                // compute filtered once here so itemCount matches itemBuilder
+                itemCount: (() {
+                  final filtered = _complaints.where((m) {
+                    final status = (m['status'] ?? '').toString();
+                    if (_statusFilter != 'all' && status != _statusFilter) return false;
+                    if (_searchQuery.isEmpty) return true;
+                    final q = _searchQuery.toLowerCase();
+                    return m.values.any((v) => v.toString().toLowerCase().contains(q));
+                  }).toList();
+                  return (filtered.isEmpty ? 1 : filtered.length + 1);
+                })(),
+                itemBuilder: (context, index) {
+                  // compute the filtered list once per build call (deterministic)
+                  final filtered = _complaints.where((m) {
+                    final status = (m['status'] ?? '').toString();
+                    if (_statusFilter != 'all' && status != _statusFilter) return false;
+                    if (_searchQuery.isEmpty) return true;
+                    final q = _searchQuery.toLowerCase();
+                    return m.values.any((v) => v.toString().toLowerCase().contains(q));
+                  }).toList();
+
+                  if (index == 0) return _buildHeader(filtered.length);
+
+                  if (filtered.isEmpty) {
+                    return SizedBox(
+                      height: MediaQuery.of(context).size.height * 0.6,
+                      child: Center(child: Text('No complaints in ${widget.department}')),
+                    );
+                  }
+
+                  final complaint = filtered[index - 1];
+                  final id = complaint['id'];
+                  final status = (complaint['status'] ?? 'open').toString();
+
+                  // color by department (subtle left border)
+                  final leftColor = _deptColor();
+
+                  return Card(
+                    elevation: 3,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border(left: BorderSide(color: leftColor, width: 6)),
+                      ),
+                      child: ListTile(
+                        leading: Checkbox(
+                          value: _selected.contains(id.toString()),
+                          onChanged: (v) {
+                            setState(() {
+                              v == true ? _selected.add(id.toString()) : _selected.remove(id.toString());
+                            });
+                          },
+                        ),
+                        title: Text(complaint['fullName'] ?? 'Unknown'),
+                        subtitle: Text((complaint['description'] ?? '').toString().replaceAll("\n", " "), maxLines: 2, overflow: TextOverflow.ellipsis),
+                        trailing: DropdownButton<String>(
+                          value: status,
+                          underline: const SizedBox(),
+                          items: const [
+                            DropdownMenuItem(value: 'open', child: Text('Open')),
+                            DropdownMenuItem(value: 'in-progress', child: Text('In-Progress')),
+                            DropdownMenuItem(value: 'resolved', child: Text('Resolved')),
+                          ],
+                          onChanged: (val) async {
+                            if (val != null) {
+                              await _updateComplaintStatus(id.toString(), val);
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Updated to $val')));
+                            }
+                          },
+                        ),
+                        onTap: () async {
+                          await Navigator.push(context, MaterialPageRoute(builder: (_) => ComplaintDetail(complaintJson: complaint)));
+                          _loadComplaints();
+                        },
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
       floatingActionButton: _selected.isNotEmpty
@@ -241,74 +317,9 @@ class _StaffComplaintsState extends State<StaffComplaints> {
     );
   }
 
-  Widget _buildListItem(BuildContext context, int index) {
-    if (index == 0) return _buildHeader();
+  // Removed old _buildListItem - item building is now done inline in ListView
 
-    final filtered = _complaints.where((m) {
-      final status = (m['status'] ?? '').toString();
-      if (_statusFilter != 'all' && status != _statusFilter) return false;
-      if (_searchQuery.isEmpty) return true;
-      final q = _searchQuery.toLowerCase();
-      return m.values.any((v) => v.toString().toLowerCase().contains(q));
-    }).toList();
-
-    if (filtered.isEmpty) {
-      return SizedBox(
-        height: MediaQuery.of(context).size.height * 0.6,
-        child: Center(child: Text('No complaints in ${widget.department}')),
-      );
-    }
-
-    final complaint = filtered[index - 1];
-    final id = complaint['id'];
-    final status = (complaint['status'] ?? 'open').toString();
-
-    // color by department (subtle left border)
-    final leftColor = _deptColor();
-
-    return Card(
-      elevation: 3,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Container(
-        decoration: BoxDecoration(
-          border: Border(left: BorderSide(color: leftColor, width: 6)),
-        ),
-        child: ListTile(
-          leading: Checkbox(
-            value: _selected.contains(id.toString()),
-            onChanged: (v) {
-              setState(() {
-                v == true ? _selected.add(id.toString()) : _selected.remove(id.toString());
-              });
-            },
-          ),
-          title: Text(complaint['fullName'] ?? 'Unknown'),
-          subtitle: Text((complaint['description'] ?? '').toString().replaceAll("\n", " "), maxLines: 2, overflow: TextOverflow.ellipsis),
-          trailing: DropdownButton<String>(
-            value: status,
-            underline: const SizedBox(),
-            items: const [
-              DropdownMenuItem(value: 'open', child: Text('Open')),
-              DropdownMenuItem(value: 'in-progress', child: Text('In-Progress')),
-              DropdownMenuItem(value: 'resolved', child: Text('Resolved')),
-            ],
-            onChanged: (val) async {
-              if (val != null) {
-                await _updateComplaintStatus(id.toString(), val);
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Updated to $val')));
-              }
-            },
-          ),
-          onTap: () async {
-            await Navigator.push(context, MaterialPageRoute(builder: (_) => ComplaintDetail(complaintJson: complaint)));
-            _loadComplaints();
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHeader() {
+  Widget _buildHeader(int totalCount) {
     return Card(
       color: _deptColor().withOpacity(0.15),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -327,10 +338,10 @@ class _StaffComplaintsState extends State<StaffComplaints> {
                 Expanded(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text('Hello, $_staffName', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    Text(_staffEmail, style: const TextStyle(color: Colors.grey)),
+                    Text(_staffEmail, style: const TextStyle(color: Colors.black)),
                   ]),
                 ),
-                Text('${_complaints.length}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))
+                Text('$totalCount', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))
               ],
             ),
             const SizedBox(height: 12),

@@ -16,6 +16,7 @@ class ComplaintAcknowledgement extends StatefulWidget {
 
 class _ComplaintAcknowledgementState
     extends State<ComplaintAcknowledgement> {
+  int? _expandedImageIndex;
   @override
   void initState() {
     super.initState();
@@ -46,7 +47,8 @@ class _ComplaintAcknowledgementState
     final phone = j['phone'] ?? '';
     final location = j['location'] ?? 'Not provided';
     final desc = j['description'] ?? '';
-    final photo = j['photoBase64'];
+    final photo = j['classifyPhotoBase64'] ?? j['photoBase64'];
+    final refs = (j['referencePhotos'] as List<dynamic>?)?.cast<String>() ?? <String>[];
 
     return Scaffold(
       backgroundColor: const Color(0xffEAF3FF),
@@ -91,8 +93,79 @@ class _ComplaintAcknowledgementState
                       const SizedBox(height: 6),
                       Text(desc),
 
-                      if (photo != null && photo.toString().isNotEmpty)
-                        _photoPreview(photo),
+                      // show thumbnails for classify + reference images (same size)
+                      if ((photo != null && photo.toString().isNotEmpty) || refs.isNotEmpty)
+                        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          const SizedBox(height: 14),
+                          const Text("Attached Photo", style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                          const SizedBox(height: 8),
+                          Row(children: [
+                            if (photo != null && photo.toString().isNotEmpty)
+                              GestureDetector(
+                                onTap: () => setState(() => _expandedImageIndex = _expandedImageIndex == 0 ? null : 0),
+                                child: Stack(
+                                  children: [
+                                    ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.memory(base64Decode(photo), width: 140, height: 84, fit: BoxFit.cover)),
+                                    Positioned(
+                                      right: 6,
+                                      top: 6,
+                                      child: Material(
+                                        color: Colors.black45,
+                                        shape: const CircleBorder(),
+                                        child: InkWell(
+                                          onTap: () => setState(() => _expandedImageIndex = _expandedImageIndex == 0 ? null : 0),
+                                          customBorder: const CircleBorder(),
+                                          child: const Padding(padding: EdgeInsets.all(6), child: Icon(Icons.remove_red_eye, color: Colors.white, size: 18)),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            const SizedBox(width: 12),
+                            if (refs.isNotEmpty)
+                              Expanded(
+                                child: SizedBox(
+                                  height: 84,
+                                  child: ListView.separated(
+                                    scrollDirection: Axis.horizontal,
+                                    itemBuilder: (ctx, i) => GestureDetector(
+                                      onTap: () => setState(() => _expandedImageIndex = _expandedImageIndex == i + 1 ? null : i + 1),
+                                      child: Stack(
+                                        children: [
+                                          ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.memory(base64Decode(refs[i]), width: 140, height: 84, fit: BoxFit.cover)),
+                                          Positioned(
+                                            right: 6,
+                                            top: 6,
+                                            child: Material(
+                                              color: Colors.black45,
+                                              shape: const CircleBorder(),
+                                              child: InkWell(
+                                                onTap: () => setState(() => _expandedImageIndex = _expandedImageIndex == i + 1 ? null : i + 1),
+                                                customBorder: const CircleBorder(),
+                                                child: const Padding(padding: EdgeInsets.all(6), child: Icon(Icons.remove_red_eye, color: Colors.white, size: 16)),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                                    itemCount: refs.length,
+                                  ),
+                                ),
+                              ),
+                          ]),
+                          const SizedBox(height: 8),
+                          if (_expandedImageIndex != null)
+                            GestureDetector(
+                              onTap: () => setState(() => _expandedImageIndex = null),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: Image.memory(base64Decode(_expandedImageIndex == 0 ? photo! : refs[_expandedImageIndex! - 1]), height: 220, width: double.infinity, fit: BoxFit.contain),
+                              ),
+                            ),
+                        ]),
                     ],
                   ),
                 ),
@@ -199,31 +272,7 @@ class _ComplaintAcknowledgementState
     );
   }
 
-  // -------------------------------------------------------
-  // PHOTO PREVIEW
-  // -------------------------------------------------------
-  Widget _photoPreview(String base64Image) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SizedBox(height: 14),
-        const Text(
-          "Attached Photo",
-          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
-        ),
-        const SizedBox(height: 8),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(10),
-          child: Image.memory(
-            base64Decode(base64Image),
-            height: 180,
-            width: double.infinity,
-            fit: BoxFit.cover,
-          ),
-        ),
-      ],
-    );
-  }
+  // (Thumbnails & inline preview handled inline in build)
 
   // -------------------------------------------------------
   // BACK TO HOME BUTTON

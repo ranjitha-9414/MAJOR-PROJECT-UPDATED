@@ -1,5 +1,6 @@
 // lib/screens/complaint/new_complaint.dart
 import 'dart:convert';
+import 'package:http/http.dart' as http;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:geolocator/geolocator.dart';
@@ -31,11 +32,13 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
   final _locationCtrl = TextEditingController();
 
   String _gender = 'Male';
-  String _department = 'Technical';
-  String? _photoBase64;
+  String _department = 'Click Classify button to show category';
+  String? _classifyPhotoBase64;
+  List<String> _referencePhotos = <String>[];
   bool _submitting = false;
+  int? _expandedImageIndex;
 
-  final _departments = ['Technical', 'Cleaning', 'Infrastructure', 'Safety', 'Misconduct', 'Other'];
+  final _departments = ['Technical', 'Cleaning', 'Infrastructure', 'Safety', 'Misconduct', 'Overcrowd', 'Other'];
 
   @override
   void dispose() {
@@ -106,26 +109,124 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
                       onChanged: (v) => setState(() => _gender = v ?? _gender),
                     ),
                     const SizedBox(height: 12),
-                    _buildTextField(_trainCtrl, 'Train number', validator: (v) => v == null || v.isEmpty ? 'Required' : null),
+                    _buildTextField(_trainCtrl, 'Train number', keyboardType: TextInputType.text, validator: (v) => v == null || v.isEmpty ? 'Required' : null),
                     const SizedBox(height: 12),
-                    _buildDropdown<String>(
-                      value: _department,
-                      items: _departments.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                      label: 'Department',
-                      onChanged: (v) => setState(() => _department = v ?? _department),
-                    ),
+                    // Department is now determined automatically by the classifier
+                    Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8)),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.shield, color: Colors.black54),
+                                const SizedBox(width: 12),
+                                Expanded(child: Text('Department (automated): $_department', style: const TextStyle(fontWeight: FontWeight.w600))),
+                              ],
+                            ),
+                          ),
                     const SizedBox(height: 12),
 
-                    Row(
+                    // (Classify button moved below the description)
+
+                    const SizedBox(height: 12),
+
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        ElevatedButton.icon(
-                          onPressed: _pickImage,
-                          icon: const Icon(Icons.camera_alt),
-                          label: const Text('Upload Image'),
-                          style: ElevatedButton.styleFrom(backgroundColor: const Color.fromARGB(255, 76, 142, 240), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                        Row(
+                          children: [
+                            ElevatedButton.icon(
+                              onPressed: () => _showImageSourceOptions(true),
+                              icon: const Icon(Icons.photo_camera),
+                              label: const Text('Upload image for classify'),
+                              style: ElevatedButton.styleFrom(backgroundColor: const Color.fromARGB(255, 76, 142, 240), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                            ),
+                            const SizedBox(width: 12),
+                            OutlinedButton(
+                              onPressed: () => _showImageSourceOptions(false),
+                              child: const Icon(Icons.add),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 12),
-                        if (_photoBase64 != null) _imagePreview(_photoBase64!) else const Text('No image', style: TextStyle(color: Colors.black54)),
+                        const SizedBox(height: 8),
+                        // Thumbnails area: classify thumbnail + references
+                        Row(children: [
+                          if (_classifyPhotoBase64 != null)
+                            GestureDetector(
+                              onTap: () => setState(() => _expandedImageIndex = _expandedImageIndex == 0 ? null : 0),
+                              child: Stack(
+                                children: [
+                                  ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.memory(base64Decode(_classifyPhotoBase64!), width: 140, height: 84, fit: BoxFit.cover)),
+                                  Positioned(
+                                    right: 6,
+                                    top: 6,
+                                    child: Material(
+                                      color: Colors.black45,
+                                      shape: const CircleBorder(),
+                                      child: InkWell(
+                                        onTap: () => setState(() => _expandedImageIndex = _expandedImageIndex == 0 ? null : 0),
+                                        customBorder: const CircleBorder(),
+                                        child: const Padding(padding: EdgeInsets.all(6), child: Icon(Icons.remove_red_eye, color: Colors.white, size: 18)),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          else
+                            const Text('No classify image', style: TextStyle(color: Colors.black54)),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _referencePhotos.isNotEmpty
+                                ? SizedBox(
+                                    height: 84,
+                                    child: ListView.separated(
+                                      scrollDirection: Axis.horizontal,
+                                      itemBuilder: (ctx, i) => Stack(
+                                        children: [
+                                          GestureDetector(
+                                            onTap: () => setState(() => _expandedImageIndex = _expandedImageIndex == i + 1 ? null : i + 1),
+                                            child: ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.memory(base64Decode(_referencePhotos[i]), width: 140, height: 84, fit: BoxFit.cover)),
+                                          ),
+                                          Positioned(
+                                            top: 4,
+                                            left: 4,
+                                            child: GestureDetector(
+                                              onTap: () => setState(() => _referencePhotos.removeAt(i)),
+                                              child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: Colors.black45, shape: BoxShape.circle), child: const Icon(Icons.close, size: 16, color: Colors.white)),
+                                            ),
+                                          ),
+                                          Positioned(
+                                            top: 4,
+                                            right: 4,
+                                            child: Material(
+                                              color: Colors.black45,
+                                              shape: const CircleBorder(),
+                                              child: InkWell(
+                                                onTap: () => setState(() => _expandedImageIndex = _expandedImageIndex == i + 1 ? null : i + 1),
+                                                customBorder: const CircleBorder(),
+                                                child: const Padding(padding: EdgeInsets.all(6), child: Icon(Icons.remove_red_eye, color: Colors.white, size: 16)),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      separatorBuilder: (_, __) => const SizedBox(width: 8),
+                                      itemCount: _referencePhotos.length,
+                                    ),
+                                  )
+                                : const SizedBox.shrink(),
+                          ),
+                        ]),
+                        const SizedBox(height: 8),
+                        // Inline expanded preview (same-page) if any
+                        if (_expandedImageIndex != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8.0),
+                            child: GestureDetector(
+                              onTap: () => setState(() => _expandedImageIndex = null),
+                              child: ClipRRect(borderRadius: BorderRadius.circular(10), child: Image.memory(base64Decode(_expandedImageIndex == 0 ? _classifyPhotoBase64! : _referencePhotos[_expandedImageIndex! - 1]), height: 220, width: double.infinity, fit: BoxFit.contain)),
+                            ),
+                          ),
                       ],
                     ),
                     const SizedBox(height: 12),
@@ -134,7 +235,7 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
 
                     Row(children: [
                       Expanded(
-                        child: _buildTextField(_locationCtrl, 'Location (lat, lng)', readOnly: true, hint: 'Press Locate'),
+                        child: _buildTextField(_locationCtrl, 'Location (lat, lng)', readOnly: true, hint: 'Press Locate', validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null),
                       ),
                       const SizedBox(width: 8),
                       ElevatedButton.icon(
@@ -146,15 +247,50 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
                     ]),
                     const SizedBox(height: 12),
                     _buildTextField(_descCtrl, 'Complaint description', minLines: 3, maxLines: 6, validator: (v) => v == null || v.isEmpty ? 'Required' : null),
+                    const SizedBox(height: 12),
+                    // Classify button placed after image+description and before submit
+                    Center(
+                      child: Column(
+                        children: [
+                          ElevatedButton.icon(
+                            onPressed: _classifying ? null : _runClassifier,
+                            icon: _classifying
+                                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                : const Icon(Icons.analytics),
+                            label: const Text('Classify'),
+                            style: ElevatedButton.styleFrom(backgroundColor: const Color.fromARGB(255, 58, 123, 213), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12)),
+                          ),
+                          const SizedBox(height: 8),
+                          if (_showSteps)
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              margin: const EdgeInsets.symmetric(horizontal: 8),
+                              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0,2))]),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _statusRow(_stepStarted, 'Classification started using yolov8'),
+                                  const SizedBox(height: 8),
+                                  _statusRow(_stepGetting, 'Getting category'),
+                                  const SizedBox(height: 8),
+                                  _statusRow(_stepFound, 'Classification found'),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                     const SizedBox(height: 18),
                     SizedBox(
                       height: 48,
                       child: ElevatedButton(
-                        onPressed: _submitting ? null : _submit,
+                        onPressed: (_submitting || !_classified) ? null : _submit,
                         style: ElevatedButton.styleFrom(backgroundColor: const Color.fromARGB(255, 222, 34, 228), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                         child: _submitting
                             ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Color.fromARGB(255, 247, 246, 246)))
-                            : const Text('Submit', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                            : !_classified
+                                ? const Text('Submit (Run Classify)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600))
+                                : const Text('Submit', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                       ),
                     ),
                   ],
@@ -177,6 +313,22 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
     } catch (_) {
       return const Text('Preview unavailable', style: TextStyle(color: Colors.black54));
     }
+  }
+
+  Widget _statusRow(bool done, String label) {
+    return Row(
+      children: [
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          transitionBuilder: (child, anim) => ScaleTransition(scale: anim, child: child),
+          child: done
+              ? Container(key: const ValueKey('done'), padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: Colors.green.shade600, shape: BoxShape.circle), child: const Icon(Icons.check, color: Colors.white, size: 16))
+              : Container(key: const ValueKey('pending'), padding: const EdgeInsets.all(4), decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade400), shape: BoxShape.circle), child: Icon(Icons.hourglass_top, color: Colors.grey.shade600, size: 14)),
+        ),
+        const SizedBox(width: 10),
+        Expanded(child: Text(label, style: TextStyle(color: done ? Colors.black87 : Colors.black54, fontSize: 13, fontWeight: done ? FontWeight.w600 : FontWeight.normal))),
+      ],
+    );
   }
 
   Widget _buildTextField(TextEditingController ctrl, String label,
@@ -214,13 +366,49 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
     );
   }
 
-  Future<void> _pickImage() async {
+  Future<void> _showImageSourceOptions(bool isClassify) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera),
+              title: const Text('Use Camera'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                _pickImageFrom(ImageSource.camera, isClassify);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('Choose from Gallery'),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                _pickImageFrom(ImageSource.gallery, isClassify);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickImageFrom(ImageSource source, bool isClassify) async {
     try {
       final picker = ImagePicker();
-      final XFile? x = await picker.pickImage(source: ImageSource.gallery, maxWidth: 1200, maxHeight: 1200);
+      final XFile? x = await picker.pickImage(source: source, maxWidth: 1600, maxHeight: 1600, imageQuality: 85);
       if (x == null) return;
       final bytes = await x.readAsBytes();
-      setState(() => _photoBase64 = base64.encode(bytes));
+      final b64 = base64.encode(bytes);
+      setState(() {
+        if (isClassify) {
+          _classifyPhotoBase64 = b64;
+        } else {
+          _referencePhotos.add(b64);
+        }
+      });
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Image pick failed: $e')));
     }
@@ -334,11 +522,24 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
       return;
     }
 
+    // Ensure classify image is present (classifier requires both image + text)
+    if (_classifyPhotoBase64 == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please upload an image — required for automatic classification')));
+      return;
+    }
+
+    // Ensure location is provided
+    if (_locationCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please provide location (use Locate) — required')));
+      return;
+    }
+
+    // Confirm submission after automatic classification will be run below
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Confirm complaint'),
-        content: Text('Submit complaint for ${_nameCtrl.text.trim()}\nTrain: ${_trainCtrl.text.trim()}\nDepartment: $_department'),
+        content: Text('Submit complaint for ${_nameCtrl.text.trim()}\nTrain: ${_trainCtrl.text.trim()}\nDepartment will be assigned automatically'),
         actions: [
           TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
           ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Submit')),
@@ -348,6 +549,13 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
     if (confirmed != true) return;
 
     setState(() => _submitting = true);
+
+    // Must classify before submitting
+    if (!_classified) {
+      setState(() => _submitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please run classification before submitting')));
+      return;
+    }
 
     final prefs = await SharedPreferences.getInstance();
     final listRaw = prefs.getStringList('complaints') ?? <String>[];
@@ -365,7 +573,11 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
       category: _department,
       description: _descCtrl.text.trim(),
       phone: normalizePhone(phone),
-      photoBase64: _photoBase64,
+      photoBase64: _classifyPhotoBase64,
+      classifyPhotoBase64: _classifyPhotoBase64,
+      referencePhotos: _referencePhotos,
+      classifierLabel: _classifierLabel,
+      classifierConfidence: _classifierConfidence,
       location: _locationCtrl.text.isNotEmpty ? _locationCtrl.text : null,
       userEmail: userEmail,
     );
@@ -402,8 +614,117 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
       SnackBar(content: Text(savedToFirestore ? 'Complaint submitted (synced to cloud)' : 'Complaint saved locally (offline)')),
     );
 
-    // Navigate to acknowledgement page
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => ComplaintAcknowledgement(complaintJson: complaint.toJson())));
+    // Navigate to acknowledgement page. Use pushReplacement so when the user
+    // closes the acknowledgement they return to the dashboard (the original
+    // NewComplaint route is replaced) which allows the dashboard to reload
+    // and show the newly saved complaint immediately.
+    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => ComplaintAcknowledgement(complaintJson: complaint.toJson())));
+  }
+
+  bool _classified = false;
+  bool _classifying = false;
+  bool _stepStarted = false;
+  bool _stepGetting = false;
+  bool _stepFound = false;
+  bool _showSteps = false;
+  String? _classifierLabel;
+  double? _classifierConfidence;
+
+  Future<void> _runClassifier() async {
+    if (_classifyPhotoBase64 == null || _descCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please provide both image and description before classification')));
+      return;
+    }
+    setState(() {
+      _classifying = true;
+      _showSteps = true;
+      _stepStarted = false;
+      _stepGetting = false;
+      _stepFound = false;
+    });
+
+    try {
+      // Step 1: mark started and show it briefly
+      setState(() => _stepStarted = true);
+      await Future.delayed(const Duration(milliseconds: 350));
+      // Step 2: getting
+      setState(() => _stepGetting = true);
+
+      final envBackend = const String.fromEnvironment('BACKEND_URL', defaultValue: '');
+      final backendBase = envBackend.isNotEmpty ? envBackend : (kIsWeb ? 'http://127.0.0.1:3000' : 'http://10.0.2.2:3000');
+      final classifyUri = Uri.parse('$backendBase/api/classify');
+      final payload = json.encode({'description': _descCtrl.text.trim(), 'photoBase64': _classifyPhotoBase64});
+
+      final resp = await http.post(classifyUri, headers: {'Content-Type': 'application/json'}, body: payload).timeout(const Duration(seconds: 30));
+      if (resp.statusCode == 200) {
+        final body = json.decode(resp.body) as Map<String, dynamic>;
+        final classification = body['classification'];
+        String predicted = '';
+        double conf = 0.0;
+        if (classification is Map) {
+          if (classification.containsKey('category') && classification['category'] != null) {
+            predicted = classification['category'].toString();
+          } else if (classification.containsKey('label') && classification['label'] != null) {
+            predicted = classification['label'].toString();
+          } else if (classification.containsKey('raw')) {
+            final raw = classification['raw'];
+            if (raw is Map) {
+              final fd = raw['final_decision'] ?? raw['ensemble'] ?? raw;
+              if (fd is Map && fd.containsKey('label')) predicted = fd['label'].toString();
+            }
+          }
+          conf = double.tryParse(classification['confidence']?.toString() ?? '') ?? 0.0;
+        }
+        if (predicted.isNotEmpty) {
+          final mapped = _mapToAppDepartment(predicted);
+          setState(() {
+            _department = mapped;
+            _classified = true;
+            _stepFound = true;
+            _classifierLabel = predicted;
+            _classifierConfidence = conf;
+          });
+          // let user see final state briefly
+          await Future.delayed(const Duration(milliseconds: 600));
+          setState(() {
+            _showSteps = false;
+            _stepStarted = false;
+            _stepGetting = false;
+            _stepFound = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Auto-assigned department: $mapped (${(conf*100).toStringAsFixed(1)}%)')));
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Classifier returned no category')));
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Classifier failed: ${resp.statusCode}')));
+      }
+    } catch (e) {
+      debugPrint('Classifier call failed: $e');
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Classifier call failed')));
+    } finally {
+      // ensure UI resets
+      await Future.delayed(const Duration(milliseconds: 250));
+      setState(() {
+        _classifying = false;
+        // hide steps if still visible
+        _showSteps = false;
+        _stepStarted = false;
+        _stepGetting = false;
+        _stepFound = false;
+      });
+    }
+  }
+
+  String _mapToAppDepartment(String cls) {
+    final low = cls.toLowerCase();
+    if (low.contains('clean')) return 'Cleaning';
+    if (low.contains('tech') || low.contains('technical')) return 'Technical';
+    if (low.contains('infrastruct') || low.contains('infrastructure')) return 'Infrastructure';
+    if (low.contains('safety')) return 'Safety';
+    if (low.contains('misconduct') || low.contains('misbehav')) return 'Misconduct';
+    if (low.contains('crowd') || low.contains('overcrowd') || low.contains('overcrowding')) return 'Overcrowd';
+    return 'Other';
   }
 
   Future<String> _generateComplaintId(String department) async {
@@ -413,6 +734,7 @@ class _NewComplaintScreenState extends State<NewComplaintScreen> {
       'Infrastructure': 'INF',
       'Safety': 'SAF',
       'Misconduct': 'MIS',
+      'Overcrowd': 'OVR',
       'Other': 'OTH',
     };
     final code = map[department] ?? 'OTH';

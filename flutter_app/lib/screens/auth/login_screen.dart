@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({Key? key}) : super(key: key);
@@ -108,9 +109,32 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString("current_user", cred.user!.email!);
 
+      // Signal the dashboard to show the welcome banner on next open after login
+      await prefs.setBool('show_welcome', true);
+
       await _saveRememberMe();
 
-      Navigator.pushReplacementNamed(context, "/");
+      // Determine user type & department from Firestore and navigate appropriately
+      try {
+        final doc = await FirebaseFirestore.instance.collection('users').doc(cred.user!.uid).get();
+        if (doc.exists) {
+          final data = doc.data() ?? {};
+          final userType = (data['userType'] ?? '').toString();
+          final dept = (data['department'] ?? '').toString();
+          if (userType == 'Admin') {
+            Navigator.pushReplacementNamed(context, '/admin');
+            return;
+          }
+          if (userType == 'Staff' && dept.isNotEmpty) {
+            Navigator.pushReplacementNamed(context, '/staff/${dept}');
+            return;
+          }
+        }
+      } catch (e) {
+        debugPrint('User lookup failed: $e');
+      }
+
+      Navigator.pushReplacementNamed(context, "/user");
     } on FirebaseAuthException catch (e) {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(e.message ?? "Login failed")));

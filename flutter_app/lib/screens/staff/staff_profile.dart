@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class StaffProfile extends StatefulWidget {
   final String department;
@@ -245,7 +246,7 @@ class _StaffProfileState extends State<StaffProfile>
 
               Text(
                 _staffEmail,
-                style: const TextStyle(color: Colors.white70),
+                style: const TextStyle(color: Colors.black),
               ),
 
               const SizedBox(height: 6),
@@ -312,6 +313,44 @@ class _StaffProfileState extends State<StaffProfile>
   }
 
   Future<List<Map<String, dynamic>>> _loadDeptComplaints() async {
+    // Prefer Firestore when available; fall back to SharedPreferences
+    try {
+      final q = await FirebaseFirestore.instance
+          .collection('complaints')
+          .where('category', isEqualTo: widget.department)
+          .limit(500)
+          .get();
+
+      final docs = q.docs.map((d) {
+        final data = Map<String, dynamic>.from(d.data());
+        final rawCreated = data['createdAt'];
+        if (rawCreated is Timestamp) {
+          data['createdAt'] = rawCreated.toDate().toIso8601String();
+        } else if (rawCreated is DateTime) {
+          data['createdAt'] = rawCreated.toIso8601String();
+        } else if (rawCreated == null) {
+          data['createdAt'] = DateTime.now().toIso8601String();
+        }
+        data['id'] = data['id'] ?? d.id;
+        return data;
+      }).toList();
+
+      // sort newest first
+      docs.sort((a, b) {
+        try {
+          final da = DateTime.parse(a['createdAt']);
+          final db = DateTime.parse(b['createdAt']);
+          return db.compareTo(da);
+        } catch (_) {
+          return 0;
+        }
+      });
+
+      return docs.cast<Map<String, dynamic>>();
+    } catch (e) {
+      debugPrint('Firestore load failed (profile): $e');
+    }
+
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getStringList('complaints') ?? <String>[];
 
@@ -323,9 +362,7 @@ class _StaffProfileState extends State<StaffProfile>
             return <String, dynamic>{};
           }
         })
-        .where((m) =>
-            m.isNotEmpty &&
-            (m['category'] ?? '') == widget.department)
+        .where((m) => m.isNotEmpty && (m['category'] ?? '') == widget.department)
         .toList();
   }
 }

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class AdminPerformance extends StatelessWidget {
   const AdminPerformance({Key? key}) : super(key: key);
@@ -38,6 +39,7 @@ class AdminPerformance extends StatelessWidget {
               'Infrastructure',
               'Safety',
               'Misconduct',
+              'Overcrowd',
               'Other'
             ];
 
@@ -157,13 +159,61 @@ class AdminPerformance extends StatelessWidget {
   }
 
   Future<List<Map<String, dynamic>>> _loadComplaints() async {
+    // Prefer Firestore, fallback to SharedPreferences
+    try {
+      final q = await FirebaseFirestore.instance.collection('complaints').limit(500).get();
+      final docs = q.docs.map((d) {
+        final data = Map<String, dynamic>.from(d.data());
+        final rawCreated = data['createdAt'];
+        if (rawCreated is Timestamp) {
+          data['createdAt'] = rawCreated.toDate().toIso8601String();
+        } else if (rawCreated is DateTime) {
+          data['createdAt'] = rawCreated.toIso8601String();
+        } else if (rawCreated == null) {
+          data['createdAt'] = DateTime.now().toIso8601String();
+        }
+        data['id'] = data['id'] ?? d.id;
+        return data;
+      }).toList();
+
+      docs.sort((a, b) {
+        try {
+          final da = DateTime.parse(a['createdAt']);
+          final db = DateTime.parse(b['createdAt']);
+          return db.compareTo(da);
+        } catch (_) {
+          return 0;
+        }
+      });
+
+      return docs.cast<Map<String, dynamic>>();
+    } catch (e) {
+      debugPrint('Firestore load failed (admin performance): $e');
+    }
+
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getStringList('complaints') ?? [];
 
-    return raw
-        .map<Map<String, dynamic>>(
-            (e) => json.decode(e) as Map<String, dynamic>)
-        .toList();
+    final list = raw.map<Map<String, dynamic>>((e) {
+      try {
+        return json.decode(e) as Map<String, dynamic>;
+      } catch (_) {
+        return <String, dynamic>{};
+      }
+    }).toList();
+
+    // sort by createdAt desc
+    list.sort((a, b) {
+      try {
+        final da = DateTime.parse(a['createdAt'] ?? DateTime.now().toIso8601String());
+        final db = DateTime.parse(b['createdAt'] ?? DateTime.now().toIso8601String());
+        return db.compareTo(da);
+      } catch (_) {
+        return 0;
+      }
+    });
+
+    return list;
   }
 }
 

@@ -125,6 +125,8 @@ class _ComplaintDetailState extends State<ComplaintDetail> {
     final desc = c['description'] ?? '';
     final loc = c['location'] ?? '';
     final notes = (c['staffNotes'] as List<dynamic>?)?.cast<String>() ?? <String>[];
+    final classifyPhoto = (c['classifyPhotoBase64'] as String?) ?? (c['photoBase64'] as String?);
+    final refPhotos = (c['referencePhotos'] as List<dynamic>?)?.cast<String>() ?? <String>[];
 
     return Scaffold(
       appBar: AppBar(
@@ -172,8 +174,25 @@ class _ComplaintDetailState extends State<ComplaintDetail> {
               ),
             ),
             const SizedBox(height: 18),
-            if ((c['photoBase64'] as String?)?.isNotEmpty == true)
-              ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.memory(base64Decode(c['photoBase64']), height: 220, width: double.infinity, fit: BoxFit.cover)),
+            if ((classifyPhoto)?.isNotEmpty == true)
+              GestureDetector(
+                onTap: () => _openImageViewer(0, classifyPhoto, refPhotos),
+                child: ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.memory(base64Decode(classifyPhoto!), height: 220, width: double.infinity, fit: BoxFit.contain)),
+              ),
+            if (refPhotos.isNotEmpty) const SizedBox(height: 12),
+            if (refPhotos.isNotEmpty)
+              SizedBox(
+                height: 90,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemBuilder: (ctx, i) => GestureDetector(
+                    onTap: () => _openImageViewer(i + 1, classifyPhoto, refPhotos),
+                    child: ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.memory(base64Decode(refPhotos[i]), width: 140, height: 84, fit: BoxFit.cover)),
+                  ),
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemCount: refPhotos.length,
+                ),
+              ),
             const SizedBox(height: 18),
             Card(
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -187,6 +206,18 @@ class _ComplaintDetailState extends State<ComplaintDetail> {
                   _infoRow("Phone", phone),
                   _infoRow("Gender", c['gender'] ?? ''),
                   _infoRow("Location", loc),
+                  const SizedBox(height: 12),
+                  // Classifier audit info (if available)
+                  Builder(builder: (_) {
+                    final cl = c['classifierLabel'] as String? ?? '';
+                    final ccRaw = c['classifierConfidence'];
+                    String classifierText = '';
+                    if (cl.isNotEmpty) {
+                      final cc = ccRaw is num ? ccRaw.toDouble() : double.tryParse(ccRaw?.toString() ?? '');
+                      if (cc != null) classifierText = '$cl (${(cc * 100).toStringAsFixed(1)}%)'; else classifierText = cl;
+                    }
+                    return classifierText.isNotEmpty ? _infoRow('Classifier', classifierText) : const SizedBox.shrink();
+                  }),
                   const SizedBox(height: 12),
                   const Text("Description", style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 6),
@@ -238,5 +269,25 @@ class _ComplaintDetailState extends State<ComplaintDetail> {
         ),
       ),
     );
+  }
+
+  void _openImageViewer(int startIndex, String? classifyPhoto, List<String> refPhotos) {
+    final images = <String>[];
+    if (classifyPhoto != null && classifyPhoto.isNotEmpty) images.add(classifyPhoto);
+    images.addAll(refPhotos);
+
+    if (images.isEmpty) return;
+
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(backgroundColor: Colors.black, elevation: 0),
+        body: PageView.builder(
+          controller: PageController(initialPage: startIndex),
+          itemCount: images.length,
+          itemBuilder: (ctx, i) => Center(child: InteractiveViewer(child: Image.memory(base64Decode(images[i]), fit: BoxFit.contain))),
+        ),
+      ),
+    ));
   }
 }

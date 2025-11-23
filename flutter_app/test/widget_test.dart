@@ -4,7 +4,7 @@ import 'package:flutter/widgets.dart';
 
 void main() {
   testWidgets('App starts and shows a MaterialApp', (WidgetTester tester) async {
-    await tester.pumpWidget(const Directionality(
+    await tester.pumpWidget(Directionality(
       textDirection: TextDirection.ltr,
       child: WidgetsApp(color: Color(0xffffffff)),
     ));

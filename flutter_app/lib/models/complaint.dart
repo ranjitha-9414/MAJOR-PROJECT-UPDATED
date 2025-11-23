@@ -10,6 +10,10 @@ class Complaint {
   final String description;
   final String phone;
   final String? photoBase64;
+  final String? classifyPhotoBase64;
+  final List<String>? referencePhotos;
+  final String? classifierLabel;
+  final double? classifierConfidence;
   final String? location;
   final String? address;
   final String status;
@@ -25,6 +29,10 @@ class Complaint {
     required this.description,
     required this.phone,
     this.photoBase64,
+    this.classifyPhotoBase64,
+    this.referencePhotos,
+    this.classifierLabel,
+    this.classifierConfidence,
     this.location,
     this.address,
     this.status = 'open',
@@ -65,6 +73,10 @@ class Complaint {
       description: j['description'] ?? j['desc'] ?? '',
       phone: j['phone'] ?? '',
       photoBase64: j['photoBase64'],
+      classifyPhotoBase64: j['classifyPhotoBase64'] ?? j['photoBase64'],
+      referencePhotos: (j['referencePhotos'] as List<dynamic>?)?.cast<String>() ?? <String>[],
+      classifierLabel: j['classifierLabel'] as String?,
+      classifierConfidence: j['classifierConfidence'] is num ? (j['classifierConfidence'] as num).toDouble() : double.tryParse(j['classifierConfidence']?.toString() ?? ''),
       location: j['location'],
       address: j['address'],
       status: j['status'] ?? 'open',
@@ -83,7 +95,13 @@ class Complaint {
       'category': category,
       'description': description,
       'phone': phone,
-      'photoBase64': photoBase64,
+      // Keep legacy `photoBase64` for backwards compatibility but prefer `classifyPhotoBase64`.
+      'photoBase64': classifyPhotoBase64 ?? photoBase64,
+      'classifyPhotoBase64': classifyPhotoBase64 ?? photoBase64,
+      'referencePhotos': referencePhotos ?? <String>[],
+      // Classifier audit fields
+      'classifierLabel': classifierLabel,
+      'classifierConfidence': classifierConfidence,
       'location': location,
       'address': address,
       'status': status,

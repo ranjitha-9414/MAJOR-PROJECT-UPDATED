@@ -28,7 +28,8 @@ class _RegisterScreenState extends State<RegisterScreen>
     "Cleaning",
     "Infrastructure",
     "Safety",
-    "Misconduct"
+    "Misconduct",
+    "Overcrowd"
   ];
 
   late AnimationController _controller;

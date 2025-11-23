@@ -63,6 +63,7 @@ class UserHome extends StatefulWidget {
 class _UserHomeState extends State<UserHome> with TickerProviderStateMixin {
   String _name = 'Guest';
   List<Complaint> _complaints = [];
+  bool _showWelcomeBanner = false;
 
   // Animation Controllers
   late AnimationController headerGlowCtrl;
@@ -142,6 +143,21 @@ class _UserHomeState extends State<UserHome> with TickerProviderStateMixin {
     }
 
     setState(() => _complaints = localComplaints);
+
+    // Check whether we should show the welcome banner once (set by login)
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final show = prefs.getBool('show_welcome') ?? false;
+      if (show) {
+        setState(() => _showWelcomeBanner = true);
+        // Clear the flag so it only shows once per login
+        await prefs.remove('show_welcome');
+        // hide banner after a short delay so it doesn't block interaction
+        Future.delayed(const Duration(seconds: 4), () {
+          if (mounted) setState(() => _showWelcomeBanner = false);
+        });
+      }
+    } catch (_) {}
 
     // Then try to sync (merge) from Firestore in background
     _syncFromFirestoreAndMerge();
@@ -306,53 +322,54 @@ class _UserHomeState extends State<UserHome> with TickerProviderStateMixin {
 
                   const SizedBox(height: 15),
 
-                  /// USER CARD (Slide animation)
-                  SlideTransition(
-                    position: Tween<Offset>(
-                      begin: const Offset(0, 0.2),
-                      end: Offset.zero,
-                    ).animate(CurvedAnimation(
-                      parent: cardSlideCtrl,
-                      curve: Curves.easeOut,
-                    )),
-                    child: Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 20),
-                      padding: const EdgeInsets.all(18),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(18),
-                        boxShadow: const [
-                          BoxShadow(
-                              blurRadius: 12,
-                              color: Colors.black26,
-                              offset: Offset(0, 4))
-                        ],
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            "Hello, $_name 👋",
-                            style: const TextStyle(
-                                fontSize: 20, fontWeight: FontWeight.w600),
-                          ),
+                  /// USER CARD (Slide animation) - show only once after login
+                  if (_showWelcomeBanner)
+                    SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(0, 0.2),
+                        end: Offset.zero,
+                      ).animate(CurvedAnimation(
+                        parent: cardSlideCtrl,
+                        curve: Curves.easeOut,
+                      )),
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 20),
+                        padding: const EdgeInsets.all(18),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(18),
+                          boxShadow: const [
+                            BoxShadow(
+                                blurRadius: 12,
+                                color: Colors.black26,
+                                offset: Offset(0, 4))
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              "Hello, $_name 👋",
+                              style: const TextStyle(
+                                  fontSize: 20, fontWeight: FontWeight.w600),
+                            ),
 
-                          /// Settings button spin
-                          RotationTransition(
-                            turns: Tween<double>(begin: 0, end: 1).animate(
-                              CurvedAnimation(
-                                  parent: trainCtrl, curve: Curves.linear),
+                            /// Settings button spin
+                            RotationTransition(
+                              turns: Tween<double>(begin: 0, end: 1).animate(
+                                CurvedAnimation(
+                                    parent: trainCtrl, curve: Curves.linear),
+                              ),
+                              child: IconButton(
+                                icon: const Icon(Icons.settings),
+                                onPressed: () =>
+                                    Navigator.of(context).pushNamed('/settings'),
+                              ),
                             ),
-                            child: IconButton(
-                              icon: const Icon(Icons.settings),
-                              onPressed: () =>
-                                  Navigator.of(context).pushNamed('/settings'),
-                            ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
-                  ),
 
                   const SizedBox(height: 20),
 
